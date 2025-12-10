@@ -1,87 +1,72 @@
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.llms import Ollama
 from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 import gradio as gr
-import os
 
-# import the .env file
-from dotenv import load_dotenv
-load_dotenv()
+# ======================
+# CONFIG
+# ======================
+CHROMA_PATH = "chroma_db"
 
-# Check if OpenAI API key is set
-if not os.getenv('OPENAI_API_KEY'):
-    raise ValueError("OPENAI_API_KEY environment variable is not set. Please add your OpenAI API key to the .env file.")
+# ======================
+# EMBEDDINGS (FREE)
+# ======================
+embeddings_model = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 
-# configuration
-DATA_PATH = r"data"
-CHROMA_PATH = r"chroma_db"
+# ======================
+# LLM LOCAL (OLLAMA)
+# ======================
+llm = Ollama(
+    model="mistral",
+    temperature=0.5
+)
 
-embeddings_model = OpenAIEmbeddings(model="text-embedding-3-large")
-
-# initiate the model
-llm = ChatOpenAI(temperature=0.5, model='gpt-4o-mini')
-
-# connect to the chromadb
+# ======================
+# VECTOR STORE
+# ======================
 vector_store = Chroma(
     collection_name="example_collection",
     embedding_function=embeddings_model,
-    persist_directory=CHROMA_PATH, 
+    persist_directory=CHROMA_PATH,
 )
 
-# Set up the vectorstore to be the retriever
-num_results = 5
-retriever = vector_store.as_retriever(search_kwargs={'k': num_results})
+retriever = vector_store.as_retriever(search_kwargs={"k": 5})
 
-# call this function for every message added to the chatbot
+# ======================
+# CHAT FUNCTION
+# ======================
 def stream_response(message, history):
-    #print(f"Input: {message}. History: {history}\n")
-
-    # retrieve the relevant chunks based on the question asked
     docs = retriever.invoke(message)
+    knowledge = "\n\n".join(doc.page_content for doc in docs)
 
-    # add all the chunks to 'knowledge'
-    knowledge = ""
+    prompt = f"""
+You are an assistant that answers questions ONLY using the knowledge below.
+Do not use your own knowledge.
+Do not mention the knowledge source.
 
-    for doc in docs:
-        knowledge += doc.page_content+"\n\n"
+Question:
+{message}
 
+Knowledge:
+{knowledge}
+"""
 
-    # make the call to the LLM (including prompt)
-    if message is not None:
+    partial = ""
+    for chunk in llm.stream(prompt):
+        partial += chunk
+        yield partial
 
-        partial_message = ""
-
-        rag_prompt = f"""
-        You are an assistent which answers questions based on knowledge which is provided to you.
-        While answering, you don't use your internal knowledge, 
-        but solely the information in the "The knowledge" section.
-        You don't mention anything to the user about the povided knowledge.
-
-        The question: {message}
-
-        Conversation history: {history}
-
-        The knowledge: {knowledge}
-
-        """
-
-        print(rag_prompt)
-
-        # stream the response to the Gradio App
-        for response in llm.stream(rag_prompt):
-            partial_message += response.content
-            yield partial_message
-
-# initiate the Gradio app
+# ======================
+# GRADIO UI
+# ======================
 chatbot = gr.ChatInterface(
     stream_response,
-    type="messages",
     textbox=gr.Textbox(
-        placeholder="Send to the LLM...",
-        container=False,
-        autoscroll=True,
+        placeholder="Ask a question about your PDFs...",
         scale=7
     ),
 )
 
-# launch the Gradio app
 chatbot.launch()
